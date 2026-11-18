@@ -214,3 +214,100 @@ $$;
 
 -- Rooms are invite-only. Membership is granted through join_server.
 -- Never expose a service_role or secret key in browser code.
+
+
+-- Local council bots. Bot identity is assigned only by a guarded RPC.
+alter table public.messages
+  add column if not exists sender_type text not null default 'user',
+  add column if not exists bot_id text;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname='messages_sender_type_check' and conrelid='public.messages'::regclass) then
+    alter table public.messages add constraint messages_sender_type_check check (sender_type in ('user','bot'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname='messages_bot_identity_check' and conrelid='public.messages'::regclass) then
+    alter table public.messages add constraint messages_bot_identity_check check (
+      (sender_type='user' and bot_id is null) or (sender_type='bot' and bot_id in ('greg','susan','nugget'))
+    );
+  end if;
+end
+$$;
+
+create table if not exists public.server_bots (
+  server_id uuid primary key references public.servers(id) on delete cascade,
+  enabled boolean not null default false,
+  enabled_bot_ids text[] not null default array['greg','susan','nugget']::text[],
+  updated_at timestamptz not null default now(),
+  constraint server_bots_valid_ids check (enabled_bot_ids <@ array['greg','susan','nugget']::text[])
+);
+alter table public.server_bots enable row level security;
+drop policy if exists "Members read bot settings" on public.server_bots;
+create policy "Members read bot settings" on public.server_bots
+for select to authenticated using (private.is_server_member(server_id));
+revoke all on public.server_bots from anon, authenticated;
+grant select on public.server_bots to authenticated;
+
+create or replace function private.configure_server_bots(p_server_id uuid,p_enabled boolean,p_bot_ids text[])
+returns public.server_bots language plpgsql security definer set search_path = ''
+as $$
+declare v_row public.server_bots; v_ids text[] := coalesce(p_bot_ids,array[]::text[]);
+begin
+  if auth.uid() is null or not private.is_server_owner(p_server_id) then
+    raise exception 'Only the server owner can configure council bots' using errcode='42501';
+  end if;
+  if cardinality(v_ids)>3 or not (v_ids <@ array['greg','susan','nugget']::text[]) then
+    raise exception 'Invalid bot selection' using errcode='22023';
+  end if;
+  insert into public.server_bots(server_id,enabled,enabled_bot_ids,updated_at)
+  values(p_server_id,coalesce(p_enabled,false),v_ids,now())
+  on conflict(server_id) do update set enabled=excluded.enabled,enabled_bot_ids=excluded.enabled_bot_ids,updated_at=now()
+  returning * into v_row;
+  return v_row;
+end;
+$$;
+revoke all on function private.configure_server_bots(uuid,boolean,text[]) from public,anon,authenticated;
+grant execute on function private.configure_server_bots(uuid,boolean,text[]) to authenticated;
+create or replace function public.configure_server_bots(p_server_id uuid,p_enabled boolean,p_bot_ids text[])
+returns public.server_bots language sql security invoker set search_path = ''
+as $$ select private.configure_server_bots(p_server_id,p_enabled,p_bot_ids); $$;
+revoke all on function public.configure_server_bots(uuid,boolean,text[]) from public,anon;
+grant execute on function public.configure_server_bots(uuid,boolean,text[]) to authenticated;
+
+create or replace function private.post_bot_message(p_server_id uuid,p_bot_id text,p_content text)
+returns public.messages language plpgsql security definer set search_path = ''
+as $$
+declare v_user_id uuid := auth.uid(); v_row public.messages;
+begin
+  if v_user_id is null or not private.is_server_member(p_server_id) then
+    raise exception 'You must be a server member to post a council reply' using errcode='42501';
+  end if;
+  if p_bot_id not in ('greg','susan','nugget') then raise exception 'Unknown council bot' using errcode='22023'; end if;
+  if length(trim(coalesce(p_content,'')))=0 or length(p_content)>2000 then
+    raise exception 'Bot reply must contain 1 to 2000 characters' using errcode='22023';
+  end if;
+  if not exists(select 1 from public.server_bots sb where sb.server_id=p_server_id and sb.enabled=true and p_bot_id=any(sb.enabled_bot_ids)) then
+    raise exception 'This council bot is not enabled in this server' using errcode='42501';
+  end if;
+  perform 1 from public.servers s where s.id=p_server_id for update;
+  if exists(select 1 from public.messages m where m.server_id=p_server_id and m.sender_type='bot' and m.created_at>now()-interval '12 seconds') then
+    raise exception 'The council is taking a short pause before its next reply' using errcode='P0001';
+  end if;
+  insert into public.messages(server_id,user_id,content,sender_type,bot_id)
+  values(p_server_id,v_user_id,trim(p_content),'bot',p_bot_id) returning * into v_row;
+  return v_row;
+end;
+$$;
+revoke all on function private.post_bot_message(uuid,text,text) from public,anon,authenticated;
+grant execute on function private.post_bot_message(uuid,text,text) to authenticated;
+create or replace function public.post_bot_message(p_server_id uuid,p_bot_id text,p_content text)
+returns public.messages language sql security invoker set search_path = ''
+as $$ select private.post_bot_message(p_server_id,p_bot_id,p_content); $$;
+revoke all on function public.post_bot_message(uuid,text,text) from public,anon;
+grant execute on function public.post_bot_message(uuid,text,text) to authenticated;
+
+drop policy if exists "Members send messages" on public.messages;
+create policy "Members send messages" on public.messages
+for insert to authenticated with check (
+  sender_type='user' and bot_id is null and user_id=(select auth.uid()) and private.is_server_member(server_id)
+);
