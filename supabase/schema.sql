@@ -76,6 +76,38 @@ create trigger on_server_created_add_owner
 after insert on public.servers for each row
 execute function public.add_server_owner_as_member();
 
+-- Create a server only for the authenticated caller.
+-- The function sets owner_id from auth.uid() itself, never from client input.
+create or replace function public.create_server(
+  p_name text,
+  p_description text,
+  p_join_code text
+)
+returns public.servers
+language plpgsql
+security definer
+set search_path = ''
+as $
+declare
+  v_user_id uuid := auth.uid();
+  v_server public.servers;
+begin
+  if v_user_id is null then
+    raise exception 'Authentication token was not received by the database'
+      using errcode = '42501';
+  end if;
+  if length(trim(coalesce(p_name, ''))) = 0 then
+    raise exception 'Server name is required' using errcode = '22023';
+  end if;
+  insert into public.servers (name, description, owner_id, join_code)
+  values (trim(p_name), coalesce(p_description, ''), v_user_id, p_join_code)
+  returning * into v_server;
+  return v_server;
+end;
+$;
+revoke all on function public.create_server(text, text, text) from public, anon;
+grant execute on function public.create_server(text, text, text) to authenticated;
+
 -- The private SECURITY DEFINER function validates the invite and adds membership.
 create or replace function private.join_server(p_join_code text)
 returns uuid language plpgsql security definer set search_path = ''
