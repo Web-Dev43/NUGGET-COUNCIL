@@ -46,16 +46,17 @@ async function saveBotSettings(){
 }
 async function chooseDeviceModel(){
   const mode=$("model-mode").value||"auto";
-  const mobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const mobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(/Macintosh/.test(navigator.userAgent)&&navigator.maxTouchPoints>1);
   const memory=Number(navigator.deviceMemory||0);
   let gpu=false;
-  if(navigator.gpu){try{gpu=!!(await navigator.gpu.requestAdapter())}catch{}}
-  let model="onnx-community/SmolLM2-360M-Instruct-ONNX";
-  let label="SmolLM2 360M";
-  if(mode==="balanced"||(mode==="auto"&&gpu&&!mobile&&memory>=8)){
-    model="onnx-community/Qwen2.5-0.5B-Instruct";label="Qwen 0.5B";
+  if(navigator.gpu&&!mobile){try{gpu=!!(await navigator.gpu.requestAdapter())}catch{}}
+  // Mobile browsers can be terminated by iOS during large GPU allocations.
+  // Keep phones on the 135M quantized CPU profile for a safer first load.
+  const model="onnx-community/SmolLM2-135M-Instruct-ONNX";
+  const label="SmolLM2 135M";
+  if(mode==="balanced"&&!mobile){
+    return {model:"onnx-community/Qwen2.5-0.5B-Instruct",label:"Qwen 0.5B",device:gpu?"webgpu":"wasm",dtype:gpu?"q4f16":"q4",mobile,memory,gpu};
   }
-  if(mode==="small"){model="onnx-community/SmolLM2-360M-Instruct-ONNX";label="SmolLM2 360M"}
   return {model,label,device:gpu?"webgpu":"wasm",dtype:gpu?"q4f16":"q4",mobile,memory,gpu};
 }
 function setModelStatus(message,percent){
@@ -69,28 +70,37 @@ async function loadLocalBotModel(){
   if(state.modelPromise)return state.modelPromise;
   state.modelPromise=(async()=>{
     const profile=await chooseDeviceModel();state.modelProfile=profile;
-    setModelStatus("Preparing "+profile.label+" · "+(profile.gpu?"WebGPU":"CPU mode"),0);
+    setModelStatus("Preparing "+profile.label+" · "+(profile.gpu?"WebGPU":"low-memory CPU mode"),0);
     const lib=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2");
     lib.env.allowLocalModels=false;lib.env.useBrowserCache=true;
+    let lastProgress=0;
     const onProgress=info=>{
       if(info?.status==="progress"&&typeof info.progress==="number"){
         const p=info.progress<=1?info.progress*100:info.progress;
+        lastProgress=Math.max(lastProgress,p);
         setModelStatus("Downloading "+(info.file||profile.label)+" · "+Math.round(p)+"%",p);
-      }else if(info?.status==="done"){setModelStatus("Preparing model files…",100)}
+      }else if(info?.status==="done"){
+        setModelStatus("Download complete. Loading model into memory… keep this tab open.",100);
+      }
     };
     try{
-      state.modelPipeline=await lib.pipeline("text-generation",profile.model,{device:profile.device,dtype:profile.dtype,progress_callback:onProgress});
+      state.modelPipeline=await lib.pipeline("text-generation",profile.model,{
+        device:profile.device,dtype:profile.dtype,progress_callback:onProgress
+      });
     }catch(firstError){
       if(profile.device!=="webgpu")throw firstError;
-      setModelStatus("WebGPU model unavailable. Switching to CPU mode…",null);
-      state.modelProfile={...profile,device:"wasm",dtype:"q4"};
-      state.modelPipeline=await lib.pipeline("text-generation",profile.model,{device:"wasm",dtype:"q4",progress_callback:onProgress});
+      setModelStatus("WebGPU initialization failed. Retrying the small model on CPU…",null);
+      const fallbackModel="onnx-community/SmolLM2-135M-Instruct-ONNX";
+      state.modelProfile={...profile,model:fallbackModel,label:"SmolLM2 135M",device:"wasm",dtype:"q4"};
+      state.modelPipeline=await lib.pipeline("text-generation",fallbackModel,{
+        device:"wasm",dtype:"q4",progress_callback:onProgress
+      });
     }
-    setModelStatus(profile.label+" ready on this device",null);
+    setModelStatus(profile.label+" loaded and ready on this device.",null);
     return state.modelPipeline;
   })().catch(error=>{
     state.modelPromise=null;state.modelPipeline=null;
-    setModelStatus("Model failed to load: "+(error?.message||String(error)),null);
+    setModelStatus("Model couldn't start: "+(error?.message||String(error))+". Try reloading the page.",null);
     throw error;
   });
   return state.modelPromise;
@@ -111,7 +121,7 @@ async function maybeGenerateBotReply(message,roomId,sourceMessageId){
     const model=await loadLocalBotModel();
     if(state.room?.id!==roomId)return;
     setModelStatus("Thinking locally…",null);
-    const output=await model(buildBotPrompt(botId,message),{max_new_tokens:115,temperature:.72,do_sample:true,return_full_text:false});
+    const output=await model(buildBotPrompt(botId,message),{max_new_tokens:72,temperature:.72,do_sample:true,return_full_text:false});
     let reply=output?.[0]?.generated_text;
     if(Array.isArray(reply))reply=reply.map(x=>x?.content||"").join(" ");
     reply=String(reply||"").replace(/^\s*"+|"+\s*$/g,"").trim();
