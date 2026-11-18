@@ -20,24 +20,16 @@ function subscribe(){if(state.channel)db.removeChannel(state.channel);state.chan
 async function createServer(n,d){
   const refreshed=await db.auth.refreshSession();
   if(refreshed.error){
-    console.error("Session refresh failed",refreshed.error);
     toast("Session refresh failed: "+refreshed.error.message);
     return
   }
   const verified=await db.auth.getUser();
   const currentUser=verified.data.user;
-  const session=refreshed.data.session;
-  if(verified.error||!currentUser||!session){
+  if(verified.error||!currentUser||!refreshed.data.session){
     state.user=null;
     updateUser();
     toast("Could not verify your session. Please sign in again.");
     auth();
-    return
-  }
-  const jwtSub=(()=>{try{return JSON.parse(atob(session.access_token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))).sub}catch{return null}})();
-  if(jwtSub!==currentUser.id){
-    console.error("Auth identity mismatch",{jwtSub,verifiedUserId:currentUser.id});
-    toast("Session identity mismatch. Sign out and sign in again.");
     return
   }
   state.user=currentUser;
@@ -45,20 +37,27 @@ async function createServer(n,d){
   const alphabet="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const bytes=crypto.getRandomValues(new Uint8Array(5));
   const code=Array.from(bytes,b=>alphabet[b%alphabet.length]).join("");
-  const r=await db.from("servers").insert({
-    name:n,description:d,owner_id:currentUser.id,join_code:code
-  }).select().single();
+  const r=await db.rpc("create_server",{
+    p_name:n,
+    p_description:d,
+    p_join_code:code
+  });
   if(r.error){
-    console.error("Create server failed",r.error,{verifiedUserId:currentUser.id,jwtSub});
+    console.error("Create server RPC failed",r.error);
     const detail=[r.error.message,r.error.details,r.error.hint,r.error.code].filter(Boolean).join(" | ");
     toast("Could not create server: "+detail);
     return
   }
-  state.servers.unshift(r.data);
+  const server=Array.isArray(r.data)?r.data[0]:r.data;
+  if(!server){
+    toast("Server creation returned no server record. Please refresh and check your rooms.");
+    return
+  }
+  state.servers.unshift(server);
   renderServers();
   $("server-dialog").close();
   toast("Created! Invite code: "+code);
-  openRoom(r.data.id)
+  openRoom(server.id)
 }
 async function joinServer(code){if(!auth())return;const r=await db.rpc("join_server",{p_join_code:code.toUpperCase()});if(r.error){toast(r.error.message);return}await loadServers();$("join-dialog").close();toast("You joined the server");openRoom(r.data)}
 async function sendMessage(s){const r=await db.from("messages").insert({server_id:state.room.id,user_id:state.user.id,content:s});if(r.error){toast(r.error.message);return}$("message-input").value=""}
