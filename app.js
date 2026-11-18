@@ -13,7 +13,7 @@ function view(v){document.querySelectorAll(".view").forEach(x=>x.classList.remov
 function card(s){const own=s.owner_id===state.user?.id;return '<article class="server-card" data-server="'+s.id+'"><div class="server-card-top"><div class="server-avatar">'+esc(s.name[0]||"N")+'</div><span class="server-tag">'+(own?"OWNER":"MEMBER")+'</span></div><h3>'+esc(s.name)+'</h3><p>'+esc(s.description||"A place for a good debate.")+'</p><div class="server-card-foot"><span>▦ Private server</span><span>Open room ↗</span></div></article>'}
 function renderServers(){const html=state.servers.map(card).join("");$("server-grid").innerHTML=html||'<div class="empty-card"><h3>No rooms yet</h3><p>Create your first server or join one with an invite code.</p><button id="empty-create" class="button button-secondary">Create a server</button></div>';$("my-server-grid").innerHTML=html||'<div class="empty-card"><h3>No servers yet</h3><p>Join or create a server to see it here.</p></div>';$("room-count").textContent=state.servers.length+" rooms";$("sidebar-servers").innerHTML=state.servers.map(s=>'<button class="side-server" data-server="'+s.id+'">▦ &nbsp;'+esc(s.name)+'</button>').join("")||'<div class="side-empty">Your servers will show up here</div>';document.querySelectorAll("[data-server]").forEach(x=>x.addEventListener("click",()=>openRoom(x.dataset.server)));$("empty-create")?.addEventListener("click",()=>auth()&&$("server-dialog").showModal())}
 async function loadServers(){if(!state.user){state.servers=[];renderServers();return}const r=await db.from("servers").select("id,name,description,owner_id,join_code,created_at").order("created_at",{ascending:false});if(r.error){console.error(r.error);toast("Server load failed: "+r.error.message);return}state.servers=r.data||[];renderServers()}
-async function openRoom(id){const s=state.servers.find(x=>x.id===id);if(!s)return;state.room=s;$("room-title").textContent=s.name;$("room-description").textContent=s.description||"";$("room-kicker").textContent="SERVER / "+s.name.toUpperCase();$("bot-toggle").disabled=s.owner_id!==state.user?.id;$("bot-toggle").textContent=s.owner_id===state.user?.id?"Enable council bots":"Owner controls bots";$("bot-list").innerHTML=["Greg · argumentative","Susan · logical","Nugget Jr · chaotic"].map((x,i)=>'<div class="bot-row"><span class="bot-avatar">'+["G","S","N"][i]+'</span>'+x+'<span class="bot-state">OFF</span></div>').join("");view("room");await loadMessages();subscribe();const m=await db.from("server_members").select("*",{count:"exact",head:true}).eq("server_id",id);$("member-count").textContent=m.count??"—"}
+async function openRoom(id){const s=state.servers.find(x=>x.id===id);if(!s)return;state.room=s;$("room-title").textContent=s.name;$("room-description").textContent=s.description||"";$("room-kicker").textContent="SERVER / "+s.name.toUpperCase();$("bot-toggle").disabled=s.owner_id!==state.user?.id;$("leave-server").classList.toggle("hidden",s.owner_id===state.user?.id);$("bot-toggle").textContent=s.owner_id===state.user?.id?"Enable council bots":"Owner controls bots";$("bot-list").innerHTML=["Greg · argumentative","Susan · logical","Nugget Jr · chaotic"].map((x,i)=>'<div class="bot-row"><span class="bot-avatar">'+["G","S","N"][i]+'</span>'+x+'<span class="bot-state">OFF</span></div>').join("");view("room");await loadMessages();subscribe();const m=await db.from("server_members").select("*",{count:"exact",head:true}).eq("server_id",id);$("member-count").textContent=m.count??"—"}
 async function loadMessages(){const r=await db.from("messages").select("id,server_id,user_id,content,created_at").eq("server_id",state.room.id).order("created_at",{ascending:true}).limit(100);if(r.error){toast("Could not load messages");return}state.messages=r.data||[];renderMessages()}
 function renderMessages(){const list=$("message-list");if(!state.messages.length){list.innerHTML='<div class="message-empty">The floor is empty. Make the opening argument.</div>';return}list.innerHTML=state.messages.map(m=>{const n=m.user_id===state.user?.id?name():"Council member";return '<div class="message"><div class="message-avatar">'+esc(n[0])+'</div><div class="message-body"><div class="message-meta"><span class="message-author">'+esc(n)+'</span><span class="message-time">'+new Date(m.created_at).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"})+'</span></div><div class="message-text">'+esc(m.content)+'</div></div></div>'}).join("");list.scrollTop=list.scrollHeight}
 function subscribe(){if(state.channel)db.removeChannel(state.channel);state.channel=db.channel("room-"+state.room.id).on("postgres_changes",{event:"INSERT",schema:"public",table:"messages",filter:"server_id=eq."+state.room.id},p=>{if(!state.messages.some(m=>m.id===p.new.id)){state.messages.push(p.new);renderMessages()}}).subscribe()}
@@ -74,6 +74,34 @@ $("message-form").addEventListener("submit",e=>{e.preventDefault();const s=$("me
 $("invite-button").addEventListener("click",async()=>{try{await navigator.clipboard.writeText(state.room.join_code);toast("Invite code copied")}catch{toast("Invite code: "+state.room.join_code)}});
 $("room-settings").addEventListener("click",()=>{if(state.room.owner_id!==state.user?.id){toast("Only the owner can edit this server");return}$("settings-name").value=state.room.name;$("settings-description").value=state.room.description||"";$("settings-code").textContent=state.room.join_code;$("settings-dialog").showModal()});
 $("settings-form").addEventListener("submit",async e=>{e.preventDefault();const r=await db.from("servers").update({name:$("settings-name").value.trim(),description:$("settings-description").value.trim()}).eq("id",state.room.id).select().single();if(r.error){toast(r.error.message);return}state.room=r.data;await loadServers();$("room-title").textContent=r.data.name;$("room-description").textContent=r.data.description||"";$("settings-dialog").close();toast("Server updated")});
+$("delete-server").addEventListener("click",async()=>{
+  const room=state.room;
+  if(!room||room.owner_id!==state.user?.id){
+    toast("Only the server owner can delete this server");
+    return
+  }
+  if(!confirm('Permanently delete "'+room.name+'"? This also deletes all messages and removes every member. This cannot be undone.'))return;
+  const serverId=room.id;
+  const r=await db.from("servers").delete().eq("id",serverId).select("id").maybeSingle();
+  if(r.error){
+    console.error("Delete server failed",r.error);
+    toast("Could not delete server: "+r.error.message);
+    return
+  }
+  if(!r.data){
+    toast("Server was not deleted. Check that you are still the owner.");
+    return
+  }
+  if(state.channel){
+    await db.removeChannel(state.channel);
+    state.channel=null
+  }
+  state.room=null;
+  $("settings-dialog").close();
+  await loadServers();
+  view("discover");
+  toast("Server deleted")
+});
 $("leave-server").addEventListener("click",async()=>{if(!confirm("Leave this server?"))return;const r=await db.from("server_members").delete().eq("server_id",state.room.id).eq("user_id",state.user.id);if(r.error){toast(r.error.message);return}if(state.channel)db.removeChannel(state.channel);state.room=null;await loadServers();view("discover")});
 $("bot-toggle").addEventListener("click",()=>{if(state.room?.owner_id!==state.user?.id)return;state.bots=!state.bots;document.querySelectorAll(".bot-state").forEach(x=>x.textContent=state.bots?"READY":"OFF");$("bot-toggle").textContent=state.bots?"Disable council bots":"Enable council bots";toast("Bot controls changed. Replies are not live yet.")});
 document.querySelectorAll(".nav-item").forEach(b=>b.addEventListener("click",()=>view(b.dataset.view)));
