@@ -2,7 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const cfg=window.SUPABASE_CONFIG;
 const db=cfg?.url&&cfg?.publishableKey?createClient(cfg.url,cfg.publishableKey):null;
 const $=id=>document.getElementById(id);
-const state={user:null,servers:[],room:null,channel:null,messages:[],authMode:"signin",botsEnabled:false,enabledBotIds:["greg","susan","nugget"],modelPipeline:null,modelPromise:null,modelProfile:null,botGenerating:false};
+const state={user:null,servers:[],room:null,channel:null,messages:[],authMode:"signin",botsEnabled:false,enabledBotIds:["greg","susan","nugget"],modelPipeline:null,modelPromise:null,modelProfile:null,botGenerating:false,modelStoragePersistent:null};
 const BOT_META={greg:{name:"Greg",tagline:"Argumentative",avatar:"G",style:"Challenge assumptions, point out weak logic, and push back firmly without being rude."},susan:{name:"Susan",tagline:"Evidence focused",avatar:"S",style:"Reason carefully, ask for evidence, separate facts from opinions, and explain uncertainty."},nugget:{name:"Nugget Jr.",tagline:"Chaotic wildcard",avatar:"N",style:"Bring unexpected angles and playful energy, but still make a coherent argument."}};
 let toastTimer;
 function toast(s){const t=$("toast");t.textContent=s;t.classList.add("show");clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove("show"),2800)}
@@ -65,14 +65,29 @@ function setModelStatus(message,percent){
   wrap.classList.toggle("hidden",percent===null||percent===undefined);
   if(percent!==null&&percent!==undefined)bar.style.width=Math.max(0,Math.min(100,percent))+"%";
 }
+async function requestPersistentModelStorage(){
+  const storage=navigator.storage;
+  if(!storage)return false;
+  try{
+    if(typeof storage.persisted==="function"&&await storage.persisted())return true;
+    if(typeof storage.persist==="function")return !!(await storage.persist());
+  }catch(error){
+    console.warn("Persistent browser storage request failed",error);
+  }
+  return false;
+}
 async function loadLocalBotModel(){
   if(state.modelPipeline)return state.modelPipeline;
   if(state.modelPromise)return state.modelPromise;
   state.modelPromise=(async()=>{
     const profile=await chooseDeviceModel();state.modelProfile=profile;
-    setModelStatus("Preparing "+profile.label+" · "+(profile.gpu?"WebGPU":"low-memory CPU mode"),0);
+    setModelStatus("Preparing "+profile.label+" · requesting persistent browser storage",0);
+    state.modelStoragePersistent=await requestPersistentModelStorage();
     const lib=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2");
-    lib.env.allowLocalModels=false;lib.env.useBrowserCache=true;
+    lib.env.allowLocalModels=false;
+    // Transformers.js stores downloaded model files in the browser Cache API.
+    // Request persistent origin storage first so the browser is less likely to evict them.
+    lib.env.useBrowserCache=true;
     let lastProgress=0;
     const onProgress=info=>{
       if(info?.status==="progress"&&typeof info.progress==="number"){
@@ -96,7 +111,7 @@ async function loadLocalBotModel(){
         device:"wasm",dtype:"q4",progress_callback:onProgress
       });
     }
-    setModelStatus(profile.label+" loaded and ready on this device.",null);
+    setModelStatus(profile.label+" loaded and cached in this browser. "+(state.modelStoragePersistent?"Persistent storage was granted, so refreshes should reuse the download.":"The browser cache is enabled, but this browser did not grant persistent storage and may evict cached files."),null);
     return state.modelPipeline;
   })().catch(error=>{
     state.modelPromise=null;state.modelPipeline=null;
@@ -126,6 +141,17 @@ async function maybeGenerateBotReply(message,roomId,sourceMessageId){
     if(Array.isArray(reply))reply=reply.map(x=>x?.content||"").join(" ");
     reply=String(reply||"").replace(/^\s*"+|"+\s*$/g,"").trim();
     if(!reply){setModelStatus("The model returned an empty reply. Try again with another message.",null);return}
+    const cleaned=reply.replace(/^(greg|susan|nugget jr?\.?|member|yuan bernardino)\s*:\s*/i,"").trim();
+    const tokens=cleaned.split(/\s+/).filter(Boolean);
+    const weirdTokens=(cleaned.match(/\b\d{3,}\b/g)||[]).length;
+    const repeatedPhrases=/(.{12,})\s+\1/i.test(cleaned);
+    const unrelatedTranscript=/\b(previous member to a participant|please review the responses so far|i have found a large group)\b/i.test(cleaned);
+    const hasConversationShape=tokens.length>=4&&/[.!?]/.test(cleaned);
+    if(tokens.length<4||weirdTokens>=2||repeatedPhrases||unrelatedTranscript||!hasConversationShape){
+      setModelStatus(BOT_META[botId].name+" skipped an unclear draft instead of posting nonsense.",null);
+      return;
+    }
+    reply=cleaned;
     if(reply.length>1900)reply=reply.slice(0,1900).replace(/\s+\S*$/,"")+"…";
     const posted=await db.rpc("post_bot_message",{p_server_id:roomId,p_bot_id:botId,p_content:reply,p_source_message_id:sourceMessageId});
     if(posted.error){
