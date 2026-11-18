@@ -17,7 +17,49 @@ async function openRoom(id){const s=state.servers.find(x=>x.id===id);if(!s)retur
 async function loadMessages(){const r=await db.from("messages").select("id,server_id,user_id,content,created_at").eq("server_id",state.room.id).order("created_at",{ascending:true}).limit(100);if(r.error){toast("Could not load messages");return}state.messages=r.data||[];renderMessages()}
 function renderMessages(){const list=$("message-list");if(!state.messages.length){list.innerHTML='<div class="message-empty">The floor is empty. Make the opening argument.</div>';return}list.innerHTML=state.messages.map(m=>{const n=m.user_id===state.user?.id?name():"Council member";return '<div class="message"><div class="message-avatar">'+esc(n[0])+'</div><div class="message-body"><div class="message-meta"><span class="message-author">'+esc(n)+'</span><span class="message-time">'+new Date(m.created_at).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"})+'</span></div><div class="message-text">'+esc(m.content)+'</div></div></div>'}).join("");list.scrollTop=list.scrollHeight}
 function subscribe(){if(state.channel)db.removeChannel(state.channel);state.channel=db.channel("room-"+state.room.id).on("postgres_changes",{event:"INSERT",schema:"public",table:"messages",filter:"server_id=eq."+state.room.id},p=>{if(!state.messages.some(m=>m.id===p.new.id)){state.messages.push(p.new);renderMessages()}}).subscribe()}
-async function createServer(n,d){const session=await db.auth.getSession();const currentUser=session.data.session?.user;if(session.error||!currentUser){state.user=null;updateUser();toast("Your session expired. Please sign in again.");auth();return}state.user=currentUser;updateUser();const alphabet="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";const bytes=crypto.getRandomValues(new Uint8Array(5));const code=Array.from(bytes,b=>alphabet[b%alphabet.length]).join("");const r=await db.from("servers").insert({name:n,description:d,owner_id:currentUser.id,join_code:code}).select().single();if(r.error){console.error("Create server failed",r.error,{sessionUserId:currentUser.id});toast("Could not create server: "+r.error.message);return}state.servers.unshift(r.data);renderServers();$("server-dialog").close();toast("Created! Invite code: "+code);openRoom(r.data.id)}
+async function createServer(n,d){
+  const refreshed=await db.auth.refreshSession();
+  if(refreshed.error){
+    console.error("Session refresh failed",refreshed.error);
+    toast("Session refresh failed: "+refreshed.error.message);
+    return
+  }
+  const verified=await db.auth.getUser();
+  const currentUser=verified.data.user;
+  const session=refreshed.data.session;
+  if(verified.error||!currentUser||!session){
+    state.user=null;
+    updateUser();
+    toast("Could not verify your session. Please sign in again.");
+    auth();
+    return
+  }
+  const jwtSub=(()=>{try{return JSON.parse(atob(session.access_token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))).sub}catch{return null}})();
+  if(jwtSub!==currentUser.id){
+    console.error("Auth identity mismatch",{jwtSub,verifiedUserId:currentUser.id});
+    toast("Session identity mismatch. Sign out and sign in again.");
+    return
+  }
+  state.user=currentUser;
+  updateUser();
+  const alphabet="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes=crypto.getRandomValues(new Uint8Array(5));
+  const code=Array.from(bytes,b=>alphabet[b%alphabet.length]).join("");
+  const r=await db.from("servers").insert({
+    name:n,description:d,owner_id:currentUser.id,join_code:code
+  }).select().single();
+  if(r.error){
+    console.error("Create server failed",r.error,{verifiedUserId:currentUser.id,jwtSub});
+    const detail=[r.error.message,r.error.details,r.error.hint,r.error.code].filter(Boolean).join(" | ");
+    toast("Could not create server: "+detail);
+    return
+  }
+  state.servers.unshift(r.data);
+  renderServers();
+  $("server-dialog").close();
+  toast("Created! Invite code: "+code);
+  openRoom(r.data.id)
+}
 async function joinServer(code){if(!auth())return;const r=await db.rpc("join_server",{p_join_code:code.toUpperCase()});if(r.error){toast(r.error.message);return}await loadServers();$("join-dialog").close();toast("You joined the server");openRoom(r.data)}
 async function sendMessage(s){const r=await db.from("messages").insert({server_id:state.room.id,user_id:state.user.id,content:s});if(r.error){toast(r.error.message);return}$("message-input").value=""}
 async function signOut(){if(state.channel)db.removeChannel(state.channel);await db.auth.signOut();state.room=null;view("discover")}
