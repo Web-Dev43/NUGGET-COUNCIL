@@ -72,6 +72,15 @@ $("server-form").addEventListener("submit",e=>{e.preventDefault();createServer($
 $("join-form").addEventListener("submit",e=>{e.preventDefault();joinServer($("join-code").value.trim())});
 $("message-form").addEventListener("submit",e=>{e.preventDefault();const s=$("message-input").value.trim();if(s)sendMessage(s)});
 $("invite-button").addEventListener("click",async()=>{try{await navigator.clipboard.writeText(state.room.join_code);toast("Invite code copied")}catch{toast("Invite code: "+state.room.join_code)}});
+$("back-to-rooms").addEventListener("click",async()=>{
+  if(state.channel){
+    await db.removeChannel(state.channel);
+    state.channel=null
+  }
+  state.room=null;
+  view("discover");
+  await loadServers()
+});
 $("room-settings").addEventListener("click",()=>{if(state.room.owner_id!==state.user?.id){toast("Only the owner can edit this server");return}$("settings-name").value=state.room.name;$("settings-description").value=state.room.description||"";$("settings-code").textContent=state.room.join_code;$("settings-dialog").showModal()});
 $("settings-form").addEventListener("submit",async e=>{e.preventDefault();const r=await db.from("servers").update({name:$("settings-name").value.trim(),description:$("settings-description").value.trim()}).eq("id",state.room.id).select().single();if(r.error){toast(r.error.message);return}state.room=r.data;await loadServers();$("room-title").textContent=r.data.name;$("room-description").textContent=r.data.description||"";$("settings-dialog").close();toast("Server updated")});
 $("delete-server").addEventListener("click",async()=>{
