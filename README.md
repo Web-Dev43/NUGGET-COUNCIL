@@ -13,17 +13,18 @@ Browser-based multiplayer debate rooms.
 Turn-based debate logic and automated bot replies are clearly marked as in development; they are not live yet.
 
 ## Setup
-1. Create a Supabase project and copy its project URL and publishable key into supabase-config.js.
-2. Run the complete supabase/schema.sql file in Supabase Dashboard > SQL Editor.
-3. Enable Email under Authentication > Providers. Set email confirmation as desired for testing.
-4. Enable GitHub Pages for the main branch with the repository root as the source.
-5. Open the published page and create an account.
+1. The project URL and publishable key are stored in `supabase-config.js`. The publishable key is intended for browser use.
+2. The live Supabase database has been initialized with `supabase/schema.sql`. For a fresh project, run that file in Supabase Dashboard > SQL Editor.
+3. Enable Email under Authentication > Providers. Choose whether email confirmation is required.
+4. In GitHub, open Settings > Pages and set the build and deployment source to **GitHub Actions**. The workflow in `.github/workflows/deploy.yml` will deploy on pushes to `main`.
+5. After the workflow succeeds, open the GitHub Pages URL and create an account.
 
-The publishable key is designed for browser use. Never put a service_role or secret key in frontend code. RLS is enabled in the supplied schema; review policies whenever adding tables or features.
+Never put a `service_role` or secret key in frontend code. All app tables use Row Level Security. Keep RLS enabled and review policies whenever adding tables or features.
 
 ## Files
-- index.html: app structure
-- styles.css: responsive interface
-- app.js: Supabase client and app behavior
-- supabase-config.js: public project URL and publishable key
-- supabase/schema.sql: tables, RPCs, RLS and Realtime setup
+- `index.html`: app structure
+- `styles.css`: responsive interface
+- `app.js`: Supabase client and app behavior
+- `supabase-config.js`: public project URL and publishable key
+- `supabase/schema.sql`: tables, RPCs, RLS and Realtime setup
+- `.github/workflows/deploy.yml`: GitHub Pages deployment
