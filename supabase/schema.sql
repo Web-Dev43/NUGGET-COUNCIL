@@ -311,3 +311,55 @@ create policy "Members send messages" on public.messages
 for insert to authenticated with check (
   sender_type='user' and bot_id is null and user_id=(select auth.uid()) and private.is_server_member(server_id)
 );
+
+-- Tie every bot reply to the member message that triggered it.
+alter table public.messages
+  add column if not exists reply_to uuid references public.messages(id) on delete cascade;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname='messages_reply_link_check' and conrelid='public.messages'::regclass) then
+    alter table public.messages add constraint messages_reply_link_check check (
+      (sender_type='user' and reply_to is null) or (sender_type='bot' and reply_to is not null)
+    );
+  end if;
+end
+$$;
+create unique index if not exists messages_one_bot_reply_per_source
+  on public.messages(reply_to) where sender_type='bot';
+
+drop function if exists public.post_bot_message(uuid,text,text);
+drop function if exists private.post_bot_message(uuid,text,text);
+create or replace function private.post_bot_message(p_server_id uuid,p_bot_id text,p_content text,p_source_message_id uuid)
+returns public.messages language plpgsql security definer set search_path = ''
+as $$
+declare v_user_id uuid := auth.uid(); v_row public.messages;
+begin
+  if v_user_id is null or not private.is_server_member(p_server_id) then
+    raise exception 'You must be a server member to post a council reply' using errcode='42501';
+  end if;
+  if p_bot_id not in ('greg','susan','nugget') then raise exception 'Unknown council bot' using errcode='22023'; end if;
+  if length(trim(coalesce(p_content,'')))=0 or length(p_content)>2000 then
+    raise exception 'Bot reply must contain 1 to 2000 characters' using errcode='22023';
+  end if;
+  if not exists(select 1 from public.messages source where source.id=p_source_message_id and source.server_id=p_server_id and source.user_id=v_user_id and source.sender_type='user') then
+    raise exception 'A council bot can only reply to your own message' using errcode='42501';
+  end if;
+  if not exists(select 1 from public.server_bots sb where sb.server_id=p_server_id and sb.enabled=true and p_bot_id=any(sb.enabled_bot_ids)) then
+    raise exception 'This council bot is not enabled in this server' using errcode='42501';
+  end if;
+  perform 1 from public.servers s where s.id=p_server_id for update;
+  if exists(select 1 from public.messages m where m.server_id=p_server_id and m.sender_type='bot' and m.created_at>now()-interval '12 seconds') then
+    raise exception 'The council is taking a short pause before its next reply' using errcode='P0001';
+  end if;
+  insert into public.messages(server_id,user_id,content,sender_type,bot_id,reply_to)
+  values(p_server_id,v_user_id,trim(p_content),'bot',p_bot_id,p_source_message_id) returning * into v_row;
+  return v_row;
+end;
+$$;
+revoke all on function private.post_bot_message(uuid,text,text,uuid) from public,anon,authenticated;
+grant execute on function private.post_bot_message(uuid,text,text,uuid) to authenticated;
+create or replace function public.post_bot_message(p_server_id uuid,p_bot_id text,p_content text,p_source_message_id uuid)
+returns public.messages language sql security invoker set search_path = ''
+as $$ select private.post_bot_message(p_server_id,p_bot_id,p_content,p_source_message_id); $$;
+revoke all on function public.post_bot_message(uuid,text,text,uuid) from public,anon;
+grant execute on function public.post_bot_message(uuid,text,text,uuid) to authenticated;
