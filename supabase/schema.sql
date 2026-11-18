@@ -77,8 +77,8 @@ after insert on public.servers for each row
 execute function public.add_server_owner_as_member();
 
 -- Create a server only for the authenticated caller.
--- The function sets owner_id from auth.uid() itself, never from client input.
-create or replace function public.create_server(
+-- Privileged implementation stays in the private schema.
+create or replace function private.create_server(
   p_name text,
   p_description text,
   p_join_code text
@@ -87,7 +87,7 @@ returns public.servers
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $$
 declare
   v_user_id uuid := auth.uid();
   v_server public.servers;
@@ -104,7 +104,24 @@ begin
   returning * into v_server;
   return v_server;
 end;
-$;
+$$;
+revoke all on function private.create_server(text, text, text) from public, anon;
+grant execute on function private.create_server(text, text, text) to authenticated;
+
+-- Public API wrapper runs as the caller; private function validates the caller.
+drop function if exists public.create_server(text, text, text);
+create function public.create_server(
+  p_name text,
+  p_description text,
+  p_join_code text
+)
+returns public.servers
+language sql
+security invoker
+set search_path = ''
+as $$
+  select private.create_server(p_name, p_description, p_join_code);
+$$;
 revoke all on function public.create_server(text, text, text) from public, anon;
 grant execute on function public.create_server(text, text, text) to authenticated;
 
