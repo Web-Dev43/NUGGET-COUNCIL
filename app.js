@@ -103,7 +103,7 @@ function buildBotPrompt(botId,newMessage){
   }).join("\n");
   return "You are "+bot.name+", an AI debate participant in Nugget Council. Personality: "+bot.style+"\nRules: Be concise (2 to 5 sentences). Address the actual argument, add a useful counterpoint or insight, and do not pretend to have checked sources. Keep it respectful and age-appropriate. Do not produce sexual content, graphic violence, or instructions for dangerous activity.\nRecent discussion:\n"+history+"\nLatest member message:\n"+newMessage+"\n"+bot.name+":";
 }
-async function maybeGenerateBotReply(message,roomId){
+async function maybeGenerateBotReply(message,roomId,sourceMessageId){
   if(state.botGenerating||!state.botsEnabled||!state.enabledBotIds.length||state.room?.id!==roomId)return;
   state.botGenerating=true;
   const botId=state.enabledBotIds[Math.floor(Math.random()*state.enabledBotIds.length)];
@@ -117,7 +117,7 @@ async function maybeGenerateBotReply(message,roomId){
     reply=String(reply||"").replace(/^\s*"+|"+\s*$/g,"").trim();
     if(!reply){setModelStatus("The model returned an empty reply. Try again with another message.",null);return}
     if(reply.length>1900)reply=reply.slice(0,1900).replace(/\s+\S*$/,"")+"…";
-    const posted=await db.rpc("post_bot_message",{p_server_id:roomId,p_bot_id:botId,p_content:reply});
+    const posted=await db.rpc("post_bot_message",{p_server_id:roomId,p_bot_id:botId,p_content:reply,p_source_message_id:sourceMessageId});
     if(posted.error){
       if(!/short pause/i.test(posted.error.message||""))console.warn("Bot reply rejected",posted.error);
       setModelStatus(/short pause/i.test(posted.error.message||"")?"Council cooldown active.":"Could not post the council reply: "+posted.error.message,null);
@@ -170,7 +170,7 @@ async function createServer(n,d){
   openRoom(server.id)
 }
 async function joinServer(code){if(!auth())return;const r=await db.rpc("join_server",{p_join_code:code.toUpperCase()});if(r.error){toast(r.error.message);return}await loadServers();$("join-dialog").close();toast("You joined the server");openRoom(r.data)}
-async function sendMessage(s){const roomId=state.room.id;const r=await db.from("messages").insert({server_id:roomId,user_id:state.user.id,content:s,sender_type:"user",bot_id:null});if(r.error){toast(r.error.message);return}$("message-input").value="";if(state.botsEnabled)maybeGenerateBotReply(s,roomId)}
+async function sendMessage(s){const roomId=state.room.id;const r=await db.from("messages").insert({server_id:roomId,user_id:state.user.id,content:s,sender_type:"user",bot_id:null}).select("id").single();if(r.error){toast(r.error.message);return}$("message-input").value="";if(state.botsEnabled)maybeGenerateBotReply(s,roomId,r.data.id)}
 async function signOut(){if(state.channel)db.removeChannel(state.channel);await db.auth.signOut();state.room=null;view("discover")}
 function updateUser(){$("user-label").textContent=state.user?name():"Guest";$("auth-open").textContent=state.user?"Sign out":"Sign in"}
 async function init(){if(!db){$("connection-label").textContent="Not configured";toast("Supabase config missing");return}const s=await db.auth.getSession();state.user=s.data.session?.user||null;updateUser();$("connection-label").textContent="Connected";await loadServers();db.auth.onAuthStateChange((_e,s)=>{state.user=s?.user||null;updateUser();setTimeout(loadServers,0);if(!state.user){state.room=null;view("discover")}})}
