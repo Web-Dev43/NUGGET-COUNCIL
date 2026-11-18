@@ -8,9 +8,11 @@ Browser-based multiplayer debate rooms.
 - Server owner controls server details
 - Live text discussion using Supabase Realtime
 - Responsive desktop/mobile layout and light theme toggle
-- Starter UI for structured debates and council bots
+- Browser-local AI council participants (Greg, Susan, Nugget Jr.)
+- Adaptive model selection with WebGPU detection, CPU fallback, download progress, and browser caching
+- Owner-controlled bot enablement and selection; bot identities are protected by database RPCs and RLS
 
-Turn-based debate logic and automated bot replies are clearly marked as in development; they are not live yet.
+Turn-based debate logic remains in development. AI replies run on the device of the member who sends a message, so each participant can use a model suited to their own hardware. The first model download requires an internet connection; subsequent loads use the browser cache when available.
 
 ## Setup
 1. The project URL and publishable key are stored in `supabase-config.js`. The publishable key is intended for browser use.
